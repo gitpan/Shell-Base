@@ -35,3 +35,4 @@ is(scalar keys %$env, 0, "parsing 0 env vars");
 is($cmd, "quux", "parsing command");
 is(scalar @args, 0, "parsing args");
 is(scalar keys %$env, 1, "parsing 1 env var with spaces: '$env->{FOO}'");
+

@@ -1,42 +1,49 @@
 use strict;
 
+# ----------------------------------------------------------------------
+# $Id: Makefile.PL,v 1.3 2003/11/20 16:41:20 dlc Exp $
+# ----------------------------------------------------------------------
+# Makefile.PL for Shell::Base
+# ----------------------------------------------------------------------
+
 use ExtUtils::MakeMaker;
 
 my %PREREQ_PM = (
-    'Term::ReadLine' => undef,
-    'Text::Shellwords' => undef,
+    'Carp'              => 0,
+    'Env'               => 0,
+    'IO::File'          => 0,
+    'Term::ReadLine'    => 0,
+    'Term::Size'        => 0.2,
+    'Text::Shellwords'  => 0,
+    'Text::Wrap'        => 0,
 );
 
 my %clean = (
-    FILES => '$(DISTVNAME).tar$(SUFFIX) *.asc distdir',
+    FILES => '$(DISTVNAME).tar$(SUFFIX) distdir',
 );
 
-my %macro = (
-    'GPG'    => 'gpg',
-    'AUTHOR' => 'darren@cpan.org',
-    'SIGN'   => '--detach-sign --armor',
+my %dist = (
+    PREOP => 'perldoc -t Base.pm > README; cpansign -s',
 );
 
 WriteMakefile(
-    NAME         => "Shell::Base",
-    VERSION_FROM => "Base.pm",
-    PREREQ_PM    => \%PREREQ_PM,
-    macro        => \%macro,
-    clean        => \%clean,
+    NAME        => "Shell::Base",
+    VERSION     => "0.04",
+    PREREQ_PM   => \%PREREQ_PM,
+    clean       => \%clean,
+    dist        => \%dist,
 );
 
 package MY;
-sub dist_dir {
-    my $self = shift;
-    my $stuff = $self->SUPER::dist_dir(@_);
+use File::Basename qw(basename);
 
-    return "$stuff\ttouch distdir\n\n";
+sub libscan {
+    my ($self, $file) = @_;
+    my $bfile = basename($file);
+
+    return if $bfile =~ /\.swp$/;
+    return if $bfile =~ /^\.(?:cvs)?ignore$/;
+
+    return $self->SUPER::libscan($file);
 }
 
-sub postamble {
-    return <<'P';
-distsign :: $(DISTVNAME).tar$(SUFFIX)
-	$(GPG) $(SIGN) -u $(AUTHOR) $(DISTVNAME).tar$(SUFFIX)
-	@cat $(DISTVNAME).tar$(SUFFIX).asc
-P
-}

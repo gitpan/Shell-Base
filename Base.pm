@@ -2,7 +2,7 @@ package Shell::Base;
 
 # ----------------------------------------------------------------------
 # Shell::Base - A generic class to build line-oriented command interpreters.
-# $Id: Base.pm,v 1.2 2003/01/22 19:51:31 darren44 Exp $
+# $Id: Base.pm,v 1.3 2003/11/20 16:41:20 dlc Exp $
 # ----------------------------------------------------------------------
 # Copyright (C) 2003 darren chamberlain <darren@cpan.org>
 #
@@ -19,13 +19,14 @@ use Carp qw(carp croak);
 use Env qw($PAGER $SHELL $COLUMNS);
 use IO::File;
 use File::Basename qw(basename);
+use Term::Size qw(chars);
 use Text::Shellwords qw(shellwords);
 
-$VERSION      = 0.01;
-$REVISION     = sprintf "%d.%02d", q$Revision: 1.2 $ =~ /(\d+)\.(\d+)/;
-$RE_QUIT      = '(?i)^\s*(exit|quit)' unless defined $RE_QUIT;
-$RE_HELP      = '(?i)^\s*(help|\?)'   unless defined $RE_HELP;
-$RE_SHEBANG   = '^\s*!\s*$'           unless defined $RE_SHEBANG;
+$VERSION      = 0.04;   # $Date: 2003/11/20 16:41:20 $
+$REVISION     = sprintf "%d.%02d", q$Revision: 1.3 $ =~ /(\d+)\.(\d+)/;
+$RE_QUIT      = '(?i)^\s*(exit|quit|logout)' unless defined $RE_QUIT;
+$RE_HELP      = '(?i)^\s*(help|\?)'          unless defined $RE_HELP;
+$RE_SHEBANG   = '^\s*!\s*$'                  unless defined $RE_SHEBANG;
 
 # ----------------------------------------------------------------------
 # import()
@@ -40,9 +41,6 @@ $RE_SHEBANG   = '^\s*!\s*$'           unless defined $RE_SHEBANG;
 #   use My::Shell qw(shell);
 #
 #   shell();
-#
-# XXX Note that this shell function might need some tweaking (the
-#     caller section in particular -- it might not go up high enough).
 #
 # Tests: t/import.t
 # ----------------------------------------------------------------------
@@ -107,6 +105,7 @@ sub new {
     my $class = shift;
     my $args  = UNIVERSAL::isa($_[0], 'HASH') ? shift : { @_ };
 
+    my @size = chars();
     my $self  = bless {
         ARGS        => $args,
         COMPLETIONS => undef,           # tab completion
@@ -116,6 +115,9 @@ sub new {
         PAGER       => undef,           # pager
         PROMPT      => $PROMPT,         # default prompt
         TERM        => undef,           # Term::ReadLine instance
+        SIZE        => \@size,          # Terminal size
+        COLUMNS     => $size[0],
+        ROWS        => $size[1],
     } => $class;
 
     $self->init_rl($args);
@@ -168,7 +170,6 @@ sub init_rl {
 sub init_rcfiles {
     my ($self, $args) = @_;
     my (@rcfiles, $rcfile);
-    my $config = $self->{ CONFIG };
 
     return unless defined $args->{ RCFILES };
 
@@ -179,42 +180,59 @@ sub init_rcfiles {
     @rcfiles = @{ $args->{ RCFILES } };
 
     for $rcfile (@rcfiles) {
-        my $buffer = "";
-        my $rc = IO::File->new($rcfile)
-            or next;
-
-        while (defined(my $line = <$rc>)) {
-            chomp $line;            
-            $line =~ s/#.*$//;
-
-            if (length $buffer && length $line) {
-                $line = $buffer . $line;
-            }
-
-            # Line continuation
-            if ($line =~ s/\\$//) {
-                $buffer = $line;
-                next;
-            } else {
-                $buffer = '';
-            }
-
-            next unless length $line;
-
-            my ($name, $value) = $line =~ /^\s*(.*?)\s*(?:=>?\s*(.*))?$/;
-            unless (defined $value) {
-                if ($name =~ s/^no//) {
-                    $value = 0;
-                }
-                else {
-                    $value = 1;
-                }
-            }
-            $config->{ $name } = $value;
-        }
+        _merge_hash($self->{ CONFIG },
+             scalar $self->parse_rcfile($rcfile));
     }
 }
 
+# ----------------------------------------------------------------------
+# parse_rcfile($filename)
+#
+# Parses a config file, and returns a hash of config values.
+#
+# test: t/parse_rcfile.t
+# ----------------------------------------------------------------------
+sub parse_rcfile {
+    my ($self, $rcfile) = @_;
+    my %config = ();
+
+    my $buffer = "";
+    my $rc = IO::File->new($rcfile)
+        or next;
+
+    while (defined(my $line = <$rc>)) {
+        chomp $line;            
+        $line =~ s/#.*$//;
+
+        if (length $buffer && length $line) {
+            $line = $buffer . $line;
+        }
+
+        # Line continuation
+        if ($line =~ s/\\$//) {
+            $buffer = $line;
+            next;
+        } else {
+            $buffer = '';
+        }
+
+        next unless length $line;
+
+        my ($name, $value) = $line =~ /^\s*(.*?)\s*(?:=>?\s*(.*))?$/;
+        $name = lc $name;
+        unless (defined $value) {
+            if ($name =~ s/^no//) {
+                $value = 0;
+            }
+            else {
+                $value = 1;
+            }
+        }
+        $config{ $name } = $value;
+    }
+
+    return wantarray ? %config : \%config;
+}
 
 # ----------------------------------------------------------------------
 # init_help()
@@ -330,7 +348,11 @@ sub run {
     $prompt = $self->prompt;
     $blurb = $self->intro;
 
-    $self->print("$blurb\n") if defined $blurb;
+    
+    if (defined $blurb) {
+        chomp $blurb;
+        $self->print("$blurb\n");
+    }
 
     while (defined (my $line = $self->readline($prompt))) {
         my (@args, $cmd, $env, $output);
@@ -340,7 +362,10 @@ sub run {
         ($cmd, $env, @args) = $self->parseline($line);
         local %ENV = (%ENV, %$env);
 
-        if ($cmd =~ /$RE_HELP/) {
+        if (! length($cmd)) {
+            $output = $self->emptycommand();
+        }
+        elsif ($cmd =~ /$RE_HELP/) {
             $output = $self->help(@args);
         }
         elsif ($cmd =~ /$RE_QUIT/) {
@@ -355,18 +380,20 @@ sub run {
                 $output = $self->$meth(@args);
             };
             if ($@) {
-                $@ = undef;
+                $output = sprintf "%s: Bad command or filename", $self->progname;
+                my $err = $@;
+                chomp $err;
+                warn "$output ($err)\n";
                 eval {
                     $output = $self->default($cmd, @args);
                 };
             }
-            if ($@) {
-                carp "Can't do anything! $@";
-            }
         }
 
         $output = $self->postcmd($output);
+        $output =~ s/\n*$//;
 
+        chomp $output;
         $self->print("$output\n") if defined $output;
 
         # In case precmd or postcmd modified the prompt,
@@ -404,7 +431,7 @@ sub print {
     my ($self, @stuff) = @_;
     my $OUT = $self->term->Attribs->{'outstream'};
 
-    print $OUT @stuff;
+    CORE::print $OUT @stuff;
 }
 
 # ----------------------------------------------------------------------
@@ -423,6 +450,7 @@ sub quit {
     $self->print("$blurb\n") if defined $blurb;
 
     if (my $h = $self->histfile) {
+        # XXX Can this be better encapsulated?
         $self->term->WriteHistory($h);
     }
 
@@ -472,6 +500,15 @@ sub default {
     return "$class->$cmd(@args) called, but do_$cmd is not defined!";
 }
 
+# ----------------------------------------------------------------------
+# emptycommand()
+#
+# What to do when an empty command is issued
+# ----------------------------------------------------------------------
+sub emptycommand {
+    my $self = shift;
+    return;
+}
 
 # ----------------------------------------------------------------------
 # prompt_no()
@@ -496,7 +533,7 @@ sub prompt_no {
 # Returns the version number.
 # ----------------------------------------------------------------------
 sub version {
-    return $VERSION
+    return $VERSION;
 }
 
 # ----------------------------------------------------------------------
@@ -546,15 +583,8 @@ sub progname {
 # Tests: t/intro.t
 # ----------------------------------------------------------------------
 sub intro {
-    my $self = shift;
-    my $prog = $self->progname;
-    my $version = $self->version;
-
-    return 
-"$prog version $version, Copyright (C) 2002 darren chamberlain
-$prog comes with ABSOLUTELY NO WARRANTY; for details type 'warranty'.
-This is free software, and you are welcome to redistribute it
-under certain conditions; see COPYING for more details.";
+    # No default intro
+    return ""
 }
 
 # ----------------------------------------------------------------------
@@ -607,7 +637,7 @@ sub parseline {
     while (@args) {
         if ($args[0] =~ /=/) {
             my ($n, $v) = split /=/, shift(@args), 2;
-            $env{$n} = $v;
+            $env{$n} = $v || "";
         }
         else {
             $cmd = shift @args;
@@ -685,17 +715,28 @@ sub histfile {
 
 
 # ----------------------------------------------------------------------
-# prompt([$prompt])
+# prompt([$prompt[, @args]])
 #
 # The prompt can be modified using this method.  For example, multiline
 # commands (which much be handled by the subclass) might modify the
-# prompt.  See, e.g., PS1 and PS2 in bash.
+# prompt, e.g., PS1 and PS2 in bash.  If $prompt is a coderef, it is
+# executed with $self and @args:
+#
+#   $self->{ PROMPT } = &$prompt($self, @args);
 #
 # Tests: t/prompt.t
 # ----------------------------------------------------------------------
 sub prompt {
     my $self = shift;
-    $self->{ PROMPT } = shift if @_;
+    if (@_) {
+        my $p = shift;
+        if (ref($p) eq 'CODE') {
+            $self->{ PROMPT } = &$p($self, @_);
+        }
+        else {
+            $self->{ PROMPT } = $p;
+        }
+    }
     return $self->{ PROMPT };
 }
 
@@ -725,7 +766,7 @@ sub pager {
 
 
 # ----------------------------------------------------------------------
-# help([$topic])
+# help([$topic[, @args]])
 #
 # Displays help. With $topic, it attempts to call $self->help_$topic,
 # which is expected to return a string.  Without $topic, it lists the
@@ -733,33 +774,36 @@ sub pager {
 # help_; these names are massaged with s/^help_// before being displayed.
 # ----------------------------------------------------------------------
 sub help {
-    my ($self, $topic) = @_;
+    my ($self, $topic, @args) = @_;
+    my @ret;
+
     if ($topic) {
         if (my $sub = $self->can("help_$topic")) {
-            return $self->$sub();
+            push @ret,  $self->$sub(@_);
         }
         else {
-            return join "\n",
-                "Sorry, no help available for $topic.",
-                "Try help with no arguments to list available help topics.";
+            push @ret,
+                "Sorry, no help available for `$topic'.";
         }
     }
+
     else {
-        no strict qw(refs);
-        my $class = ref $self || $self;
-        my %uniq = ();
         my @helps = $self->helps;
         if (@helps) {
-            return  join "\n",
+            push @ret, 
                 "Help is available for the following topics:",
                 "===========================================",
                 map({ "  * $_" } @helps),
                 "===========================================";
         }
         else {
-            return "Sorry, no help available.";
+            my $me = $self->progname;
+            push @ret, "No help available for $me.",
+                    "Please complain to the author!";
         }
     }
+
+    return join "\n", @ret;
 }
 
 
@@ -821,13 +865,14 @@ sub completions {
 # sub do_shell { shift->_do_shell(@_) }
 # ----------------------------------------------------------------------
 sub _do_shell {
-    my $self = shift;
+    my ($self, @args) = @_;
     my $sh = $SHELL || '/bin/sh';
 
-    unless (system($sh) == 0) {
-        carp "Problem executing $sh: $!";        
+    unless (system($sh, @args) == 0) {
+        carp "Problem executing $sh: $!";
     }
 
+    # No return value!
     return;
 }
 
@@ -853,6 +898,13 @@ sub do_warranty {
 'The entire risk as to the quality and performance of the program is ' .
 'with you.  Should the program prove defective, you assume the cost of ' .
 'all necessary servicing, repair or correction.', $self->progname);
+}
+
+# Helper function
+sub _merge_hash {
+    my ($merge_to, $merge_from) = @_;
+    $merge_to->{$_} = $merge_from->{$_}
+        for keys %$merge_from;
 }
 
 __END__
@@ -1053,7 +1105,11 @@ return.
   $shell->run();
 
 At the top of the loop, C<run> prints the value of $self->intro, if it
-is defined.
+is defined:
+
+  my $intro = $self->intro();
+  $self->print("$intro\n")
+      if defined $intro;
 
 C<run> does several things for each iteration of the REP loop that are
 worth noting:
@@ -1100,7 +1156,7 @@ is invoked:
 
   $output = $self->quit();
 
-$RE_QUIT is C<^(?i)\s*(quit|exit)> by default
+$RE_QUIT is C<^(?i)\s*(quit|exit|logout)> by default
 
 =item -
 
@@ -1324,6 +1380,15 @@ The default C<precmd> method does nothing:
       return $line;
   }
 
+This would be a good place to handle things tilde-expansion:
+
+  sub precmd {
+      my ($self, $line) = @_;
+      $line =~ s{~([\w\d_-]*)}
+                { $1 ? (getpwnam($1))[7] : $ENV{HOME} }e;
+      return $line;
+  }
+
 =item postcmd
 
 C<postcmd> is called immediately before any output is printed.
@@ -1342,16 +1407,16 @@ The default C<postcmd> method does nothing:
 You can do fun output filtering here:
 
   use Text::Bastardize;
+  my $bastard = Text::Bastardize->new;
   sub postcmd {
       my ($self, $output) = @_;
-      my $bastard = Text::Bastardize->new;
 
       $bastard->charge($output);
 
       return $bastard->k3wlt0k()
   }
 
-Or even translation:
+Or translation:
 
   use Text::Iconv;
   my $converter;
@@ -1371,6 +1436,15 @@ Or even translation:
 
       # Fall back to unconverted output, not croak
       return $completer->convert($output) || $output;
+  }
+
+Or put the tildes back in:
+
+  sub postcmd {
+      my ($self, $line) = @_;
+      $line =~ s{(/home/([^/ ]+))}
+                { -d $1 ? "~$2" : $1 }ge;
+      return $line;
   }
 
 =item pager
@@ -1433,13 +1507,13 @@ something like C<String::Format>:
   use Cwd;
   use File::Basename qw(basename);
   use Net::Domain qw(hostfqdn);
-  use String::Format;
+  use String::Format qw(stringf);
   use Sys::Hostname qw(hostname);
 
   sub prompt {
       my $self = shift;
       my $fmt = $self->{ PROMPT_FMT };
-      stringf $fmt => {
+      return stringf $fmt => {
           '$' => $$,
           'w' => cwd,
           'W' => basename(cwd),
@@ -1456,9 +1530,21 @@ something like C<String::Format>:
 Then $self->{ PROMPT_FMT } can be set to, for example, C<%u@%h %w %%>,
 which might yield a prompt like:
 
-  dlc@tumbleweed /tmp/Shell-Base %
+  darren@tumbleweed /tmp/Shell-Base %
 
 (See L<String::Format> for the appropriate details.)
+
+The value passed to C<prompt> can be a code ref; if so, it is invoked
+with $self and any additional arguments passed to C<prompt> as the
+arguments:
+
+    $self->prompt(\&func, @stuff);
+
+Will call:
+
+    &$func($self, @stuff);
+
+and use the return value as the prompt string.
 
 =item intro / outro
 
@@ -1491,7 +1577,7 @@ include the contents of %env.  The effect is similar to:
 
   my $output = $self->$method(@args);
 
-Remember, $output will be passed to $self->print() if it is defined.
+$output will be passed to $self->print() if it is defined.
 
 Here is method that implements the C<env> command:
 
@@ -1616,7 +1702,7 @@ listed in this section.
 
 =item readline
 
-Returns the next line of input.  Will be passed 1 arguments, the
+Returns the next line of input.  Will be passed 1 argument, the
 prompt to display.  See L<"readline"> for an example of overriding
 C<readline>.
 
@@ -1624,7 +1710,7 @@ C<readline>.
 
 Called with the data to be printed.  By default, this method prints
 to $self->term->OUT, but subclasses that aren't using Term::ReadLine
-will want to provide a usseful alternative.  One possibily might be:
+will want to provide a useful alternative.  One possibily might be:
 
   sub print {
       my ($self, @print_me) = @_;
@@ -1681,7 +1767,7 @@ I have some ideas about how to implement pipelines, but, since I have
 yet to look at the code in any existing shells, I might be completely
 insane and totally on the wrong track.  I therefore reserve the right
 to not implement this feature now, until I've looked at how some
-"proper" shells (read: bash, ksh) implement pipelines.
+proper shells implement pipelines.
 
 =back
 
@@ -1691,7 +1777,7 @@ darren chamberlain E<lt>darren@cpan.orgE<gt>
 
 =head1 REVISION
 
-$Revision: 1.2 $
+This documentation describes C<Shell::Base>, $Revision$.
 
 =head1 COPYRIGHT
 
