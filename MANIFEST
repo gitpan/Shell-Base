@@ -4,6 +4,7 @@ Makefile.PL
 MANIFEST
 README
 SIGNATURE
+doap.rdf
 t/args.t
 t/default.t
 t/histfile.t
@@ -25,7 +26,6 @@ t/progname.t
 t/prompt.t
 t/prompt_no.t
 t/shellrc
-t/signature.t
 t/term.t
 t/version.t
 META.yml                                 Module meta-data (added by MakeMaker)
